@@ -78,3 +78,6 @@ https://forms.gle/A8CaByv4ohfrCmmWA
 <p align="center">
   <img src="https://github.com/teamrudra/r25-test/blob/main/datasheets/feynman-simple.jpg" width="600" height="600"/>
 </p>
+## AI Assistance
+
+AI tools were used to help understand the C concepts, identify implementation issues, and assist with debugging. The implementation was reviewed and tested using the provided test cases and GitHub Actions.
