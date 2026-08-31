@@ -1,139 +1,179 @@
 #include "en_dc.h"
-#include <stdlib.h>
-
-/*****************************************************************************
- * Defines
- ****************************************************************************/
-
-#ifndef FALSE
-#define FALSE (0)
-#endif
-
-#ifndef TRUE
-#define TRUE (!FALSE)
-#endif
+#include <stdint.h>
+#include <stddef.h>
 
 /*****************************************************************************
  * Functions
  ****************************************************************************/
 
-/* Encode 
- * TODO : 
- * - Check the encoding loop and the buffer sizes make sure matches the required ones to the algorithm used 
- * - Check the condition based on which the whole encoding process takes place 
- * */
-encode_result frame_encode(void *dst_buf_ptr, size_t dst_buf_len,
-                               const void *src_ptr, size_t src_len) {
-  encode_result result = {0u, ENCODE_OK};
-  const uint8_t *src_read_ptr = src_ptr;
-  const uint8_t *src_end_ptr = src_read_ptr + src_len;
-  uint8_t *dst_buf_start_ptr = dst_buf_ptr;
-  uint8_t *dst_buf_end_ptr = dst_buf_start_ptr; 
-  uint8_t *dst_write_ptr = dst_code_write_ptr + 3u;
-  uint8_t src_byte = 0u;
-  uint8_t search_len = 1u;
+/*
+ * Encode data using a COBS-style zero-byte-safe format.
+ *
+ * Every code byte tells how many bytes follow before the next
+ * zero byte in the original data.
+ */
+encode_result frame_encode(void *dst_buf_ptr,
+                           size_t dst_buf_len,
+                           const void *src_ptr,
+                           size_t src_len)
+{
+    encode_result result = {0u, ENCODE_OK};
 
-  if ((dst_buf_ptr == NULL) || (src_ptr == NULL)) {
-    result.status = ENCODE_NULL_POINTER;
-    return result;
-  }
-
-  if (src_len != 0u) {
-    for (int i=0;i<search_len;i++) {
-
-
-      src_byte = *src_read_ptr++;
-      if (src_byte == 0xFFu) {
-
-      } else {
-        *dst_write_ptr++ = src_byte;
-        search_len++;
-        if (src_read_ptr >= src_end_ptr) {
-          break;
-        }
-        if (search_len == 0u) {
-          *dst_code_write_ptr = search_len;
-          dst_code_write_ptr = dst_write_ptr++;
-          search_len = 1u;
-        }
-      }
+    if (dst_buf_ptr == NULL || src_ptr == NULL) {
+        result.status = ENCODE_NULL_POINTER;
+        return result;
     }
-  }
 
-  if (dst_code_write_ptr >= dst_buf_end_ptr) {
-    result.status |= ENCODE_OUT_BUFFER_OVERFLOW;
-    dst_write_ptr = dst_buf_end_ptr;
-  } else {
-    *dst_code_write_ptr = search_len;
-  }
+    /*
+     * Calculate the maximum encoded size required.
+     */
+    size_t required_len = ENCODE_DST_BUF_LEN_MAX(src_len);
 
-  result.out_len = (size_t)(dst_write_ptr - dst_buf_start_ptr);
+    if (dst_buf_len < required_len) {
+        result.status = ENCODE_OUT_BUFFER_OVERFLOW;
+        return result;
+    }
 
-  return result;
+    uint8_t *dst = (uint8_t *)dst_buf_ptr;
+    const uint8_t *src = (const uint8_t *)src_ptr;
+
+    /*
+     * Empty input is represented by one code byte.
+     */
+    if (src_len == 0u) {
+        dst[0] = 1u;
+        result.out_len = 1u;
+        return result;
+    }
+
+    size_t code_index = 0u;
+    size_t write_index = 1u;
+    uint8_t code = 1u;
+
+    for (size_t i = 0u; i < src_len; i++) {
+
+        /*
+         * A zero byte ends the current block.
+         */
+        if (src[i] == 0u) {
+            dst[code_index] = code;
+
+            code_index = write_index;
+            write_index++;
+
+            code = 1u;
+        } else {
+            dst[write_index++] = src[i];
+            code++;
+
+            /*
+             * A code byte can represent at most 254 data bytes.
+             */
+            if (code == 0xFFu) {
+                dst[code_index] = code;
+
+                code_index = write_index;
+                write_index++;
+
+                code = 1u;
+            }
+        }
+    }
+
+    /*
+     * Write the final code byte.
+     */
+    dst[code_index] = code;
+
+    result.out_len = write_index;
+
+    return result;
 }
 
-/* Decode 
- * TODO:
- * - Verify that the decoding loop processes the complete input stream.
- * - Add appropriate termination logic for the decoding process.
- * - Ensure the decoder does not read beyond the input buffer.
- * */
-decode_result frame_decode(void *dst_buf_ptr, size_t dst_buf_len,
-                               const void *src_ptr, size_t src_len) {
-  decode_result result = {0u, DECODE_OK};
-  const uint8_t *src_read_ptr = src_ptr;
-  const uint8_t *src_end_ptr = src_read_ptr + src_len;
-  uint8_t *dst_buf_start_ptr = dst_buf_ptr;
-  uint8_t *dst_buf_end_ptr = dst_buf_start_ptr + dst_buf_len;
-  uint8_t *dst_write_ptr = dst_buf_ptr;
-  size_t remaining_bytes;
-  uint8_t src_byte;
-  uint8_t i;
-  uint8_t len_code;
 
-  if ((dst_buf_ptr == NULL) || (src_ptr == NULL)) {
-    result.status = DECODE_NULL_POINTER;
-    return result;
-  }
+/*
+ * Decode data produced by frame_encode().
+ */
+decode_result frame_decode(void *dst_buf_ptr,
+                           size_t dst_buf_len,
+                           const void *src_ptr,
+                           size_t src_len)
+{
+    decode_result result = {0u, DECODE_OK};
 
-  if (src_len != 0u) {
-    for (int i=0;i<len_code;i++) {
-      len_code = *src_read_ptr++;
-      if (len_code == 0u) {
-        result.status |= DECODE_ZERO_BYTE_IN_INPUT;
-        break;
-      }
-      len_code--;
+    if (dst_buf_ptr == NULL || src_ptr == NULL) {
+        result.status = DECODE_NULL_POINTER;
+        return result;
+    }
 
-      remaining_bytes = (size_t)(src_end_ptr - src_read_ptr);
-      if (len_code > remaining_bytes) {
-        result.status |= DECODE_INPUT_TOO_SHORT;
-        len_code = (uint8_t)remaining_bytes;
-      }
+    /*
+     * There must be at least one code byte.
+     */
+    if (src_len == 0u) {
+        result.status = DECODE_INPUT_TOO_SHORT;
+        return result;
+    }
 
-      remaining_bytes = (size_t)(dst_buf_end_ptr - dst_write_ptr);
-      if (len_code > remaining_bytes) {
-        result.status |= DECODE_OUT_BUFFER_OVERFLOW;
-        len_code = (uint8_t)remaining_bytes;
-      }
+    uint8_t *dst = (uint8_t *)dst_buf_ptr;
+    const uint8_t *src = (const uint8_t *)src_ptr;
 
-      for (i = len_code; i != 0u; i--) {
-        src_byte = *src_read_ptr++;
-        if (src_byte == 0u) {
-          result.status |= DECODE_ZERO_BYTE_IN_INPUT;
+    size_t src_index = 0u;
+    size_t dst_index = 0u;
+
+    while (src_index < src_len) {
+
+        uint8_t code = src[src_index++];
+
+        /*
+         * Code zero is invalid.
+         */
+        if (code == 0u) {
+            result.status |= DECODE_ZERO_BYTE_IN_INPUT;
+            return result;
         }
 
-      }
+        size_t copy_len = (size_t)code - 1u;
 
-      if (src_read_ptr >= src_end_ptr) {
-        break;
-      }
+        /*
+         * Make sure the encoded input actually contains
+         * all bytes described by the code.
+         */
+        if (copy_len > src_len - src_index) {
+            result.status |= DECODE_INPUT_TOO_SHORT;
+            return result;
+        }
 
+        /*
+         * Make sure the destination buffer is large enough.
+         */
+        if (copy_len > dst_buf_len - dst_index) {
+            result.status |= DECODE_OUT_BUFFER_OVERFLOW;
+            return result;
+        }
 
+        /*
+         * Copy the non-zero data bytes.
+         */
+        for (size_t i = 0u; i < copy_len; i++) {
+            dst[dst_index++] = src[src_index++];
+        }
+
+        /*
+         * If this is not the final encoded block and the code
+         * is less than 255, the original data contained a zero.
+         */
+        if (src_index < src_len && code < 0xFFu) {
+
+            if (dst_index >= dst_buf_len) {
+                result.status |= DECODE_OUT_BUFFER_OVERFLOW;
+                return result;
+            }
+
+            dst[dst_index++] = 0u;
+        }
     }
-  }
 
-  result.out_len = (size_t)(dst_write_ptr - dst_buf_start_ptr);
+    result.out_len = dst_index;
 
-  return result;
+    return result;
 }
