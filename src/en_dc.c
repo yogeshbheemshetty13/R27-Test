@@ -5,12 +5,12 @@
 /*
  * COBS (Consistent Overhead Byte Stuffing)
  *
- * This implementation:
- *   - encodes zero bytes safely
- *   - decodes encoded frames
- *   - checks NULL pointers
- *   - checks destination buffer size
- *   - checks malformed input
+ * Encode:
+ *   Converts arbitrary bytes, including 0x00, into a frame
+ *   containing no zero bytes.
+ *
+ * Decode:
+ *   Converts a valid COBS frame back into the original data.
  */
 
 /* ------------------------------------------------------------------------- */
@@ -29,9 +29,6 @@ encode_result frame_encode(void *dst_buf_ptr,
         return result;
     }
 
-    /*
-     * Even an empty input needs one byte in COBS encoding.
-     */
     size_t required_len = ENCODE_DST_BUF_LEN_MAX(src_len);
 
     if (dst_buf_len < required_len) {
@@ -49,28 +46,18 @@ encode_result frame_encode(void *dst_buf_ptr,
     for (size_t i = 0u; i < src_len; ++i) {
 
         if (src[i] == 0u) {
-
-            /*
-             * Finish the current COBS block.
-             */
             dst[code_index] = code;
 
             code_index = write_index;
             write_index++;
 
             code = 1u;
-
         } else {
-
             dst[write_index] = src[i];
             write_index++;
             code++;
 
-            /*
-             * COBS block can contain at most 254 non-zero bytes.
-             */
             if (code == 0xFFu) {
-
                 dst[code_index] = code;
 
                 code_index = write_index;
@@ -81,9 +68,6 @@ encode_result frame_encode(void *dst_buf_ptr,
         }
     }
 
-    /*
-     * Write the final block length.
-     */
     dst[code_index] = code;
 
     result.out_len = write_index;
@@ -108,9 +92,6 @@ decode_result frame_decode(void *dst_buf_ptr,
         return result;
     }
 
-    /*
-     * Empty encoded input is invalid for this decoder.
-     */
     if (src_len == 0u) {
         result.status = DECODE_INPUT_TOO_SHORT;
         return result;
@@ -124,11 +105,11 @@ decode_result frame_decode(void *dst_buf_ptr,
 
     while (src_index < src_len) {
 
-        /*
-         * The first byte of every COBS block is its code.
-         */
         uint8_t code = src[src_index];
 
+        /*
+         * A COBS code byte can never be zero.
+         */
         if (code == 0u) {
             result.status |= DECODE_ZERO_BYTE_IN_INPUT;
             break;
@@ -136,14 +117,11 @@ decode_result frame_decode(void *dst_buf_ptr,
 
         src_index++;
 
-        /*
-         * code - 1 is the number of data bytes in this block.
-         */
         size_t data_len = (size_t)code - 1u;
 
         /*
-         * Make sure the encoded input actually contains
-         * all bytes promised by the code byte.
+         * Check that the encoded frame contains
+         * all bytes described by the code byte.
          */
         if (data_len > src_len - src_index) {
             result.status |= DECODE_INPUT_TOO_SHORT;
@@ -151,23 +129,20 @@ decode_result frame_decode(void *dst_buf_ptr,
         }
 
         /*
-         * Make sure the destination has enough space.
+         * Check destination capacity before copying.
          */
         if (data_len > dst_buf_len - dst_index) {
             result.status |= DECODE_OUT_BUFFER_OVERFLOW;
             break;
         }
 
-        /*
-         * Copy the non-zero bytes.
-         */
         for (size_t i = 0u; i < data_len; ++i) {
             dst[dst_index++] = src[src_index++];
         }
 
         /*
-         * If the code is less than 0xFF and this is NOT
-         * the final block, COBS represents a zero byte.
+         * A code value below 0xFF indicates that a zero byte
+         * follows this block, unless this is the final block.
          */
         if (code < 0xFFu && src_index < src_len) {
 
