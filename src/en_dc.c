@@ -1,139 +1,175 @@
 #include "en_dc.h"
-#include <stdlib.h>
-
-/*****************************************************************************
- * Defines
- ****************************************************************************/
-
-#ifndef FALSE
-#define FALSE (0)
-#endif
-
-#ifndef TRUE
-#define TRUE (!FALSE)
-#endif
+#include <stdint.h>
 
 /*****************************************************************************
  * Functions
  ****************************************************************************/
 
-/* Encode 
- * TODO : 
- * - Check the encoding loop and the buffer sizes make sure matches the required ones to the algorithm used 
- * - Check the condition based on which the whole encoding process takes place 
- * */
+/*
+ * COBS (Consistent Overhead Byte Stuffing) encoder.
+ *
+ * The encoded output contains no zero bytes.
+ */
 encode_result frame_encode(void *dst_buf_ptr, size_t dst_buf_len,
-                               const void *src_ptr, size_t src_len) {
-  encode_result result = {0u, ENCODE_OK};
-  const uint8_t *src_read_ptr = src_ptr;
-  const uint8_t *src_end_ptr = src_read_ptr + src_len;
-  uint8_t *dst_buf_start_ptr = dst_buf_ptr;
-  uint8_t *dst_buf_end_ptr = dst_buf_start_ptr; 
-  uint8_t *dst_write_ptr = dst_code_write_ptr + 3u;
-  uint8_t src_byte = 0u;
-  uint8_t search_len = 1u;
+                           const void *src_ptr, size_t src_len)
+{
+    encode_result result = {0u, ENCODE_OK};
 
-  if ((dst_buf_ptr == NULL) || (src_ptr == NULL)) {
-    result.status = ENCODE_NULL_POINTER;
-    return result;
-  }
-
-  if (src_len != 0u) {
-    for (int i=0;i<search_len;i++) {
-
-
-      src_byte = *src_read_ptr++;
-      if (src_byte == 0xFFu) {
-
-      } else {
-        *dst_write_ptr++ = src_byte;
-        search_len++;
-        if (src_read_ptr >= src_end_ptr) {
-          break;
-        }
-        if (search_len == 0u) {
-          *dst_code_write_ptr = search_len;
-          dst_code_write_ptr = dst_write_ptr++;
-          search_len = 1u;
-        }
-      }
+    /* Check for NULL pointers */
+    if ((dst_buf_ptr == NULL) || (src_ptr == NULL)) {
+        result.status = ENCODE_NULL_POINTER;
+        return result;
     }
-  }
 
-  if (dst_code_write_ptr >= dst_buf_end_ptr) {
-    result.status |= ENCODE_OUT_BUFFER_OVERFLOW;
-    dst_write_ptr = dst_buf_end_ptr;
-  } else {
-    *dst_code_write_ptr = search_len;
-  }
+    /* Check output buffer size */
+    size_t required_len = ENCODE_DST_BUF_LEN_MAX(src_len);
 
-  result.out_len = (size_t)(dst_write_ptr - dst_buf_start_ptr);
+    if (dst_buf_len < required_len) {
+        result.status = ENCODE_OUT_BUFFER_OVERFLOW;
+        return result;
+    }
 
-  return result;
+    uint8_t *dst = (uint8_t *)dst_buf_ptr;
+    const uint8_t *src = (const uint8_t *)src_ptr;
+
+    /* Empty input */
+    if (src_len == 0u) {
+        dst[0] = 1u;
+        result.out_len = 1u;
+        return result;
+    }
+
+    size_t read_index = 0u;
+    size_t write_index = 1u;
+    size_t code_index = 0u;
+    uint8_t code = 1u;
+
+    while (read_index < src_len) {
+
+        if (src[read_index] == 0u) {
+
+            /* Finish current block */
+            dst[code_index] = code;
+
+            /* Start a new block */
+            code_index = write_index;
+            write_index++;
+            code = 1u;
+
+            read_index++;
+        }
+        else {
+
+            /* Copy non-zero byte */
+            dst[write_index] = src[read_index];
+
+            write_index++;
+            read_index++;
+            code++;
+
+            /*
+             * Maximum COBS block size is 254 non-zero bytes.
+             */
+            if (code == 255u) {
+
+                dst[code_index] = code;
+
+                code_index = write_index;
+                write_index++;
+                code = 1u;
+            }
+        }
+    }
+
+    /* Finish final block */
+    dst[code_index] = code;
+
+    result.out_len = write_index;
+    result.status = ENCODE_OK;
+
+    return result;
 }
 
-/* Decode 
- * TODO:
- * - Verify that the decoding loop processes the complete input stream.
- * - Add appropriate termination logic for the decoding process.
- * - Ensure the decoder does not read beyond the input buffer.
- * */
+
+/*
+ * COBS decoder.
+ */
 decode_result frame_decode(void *dst_buf_ptr, size_t dst_buf_len,
-                               const void *src_ptr, size_t src_len) {
-  decode_result result = {0u, DECODE_OK};
-  const uint8_t *src_read_ptr = src_ptr;
-  const uint8_t *src_end_ptr = src_read_ptr + src_len;
-  uint8_t *dst_buf_start_ptr = dst_buf_ptr;
-  uint8_t *dst_buf_end_ptr = dst_buf_start_ptr + dst_buf_len;
-  uint8_t *dst_write_ptr = dst_buf_ptr;
-  size_t remaining_bytes;
-  uint8_t src_byte;
-  uint8_t i;
-  uint8_t len_code;
+                           const void *src_ptr, size_t src_len)
+{
+    decode_result result = {0u, DECODE_OK};
 
-  if ((dst_buf_ptr == NULL) || (src_ptr == NULL)) {
-    result.status = DECODE_NULL_POINTER;
-    return result;
-  }
+    /* Check for NULL pointers */
+    if ((dst_buf_ptr == NULL) || (src_ptr == NULL)) {
+        result.status = DECODE_NULL_POINTER;
+        return result;
+    }
 
-  if (src_len != 0u) {
-    for (int i=0;i<len_code;i++) {
-      len_code = *src_read_ptr++;
-      if (len_code == 0u) {
-        result.status |= DECODE_ZERO_BYTE_IN_INPUT;
-        break;
-      }
-      len_code--;
+    uint8_t *dst = (uint8_t *)dst_buf_ptr;
+    const uint8_t *src = (const uint8_t *)src_ptr;
 
-      remaining_bytes = (size_t)(src_end_ptr - src_read_ptr);
-      if (len_code > remaining_bytes) {
-        result.status |= DECODE_INPUT_TOO_SHORT;
-        len_code = (uint8_t)remaining_bytes;
-      }
+    /* Empty input is too short to contain a COBS frame */
+    if (src_len == 0u) {
+        result.status = DECODE_INPUT_TOO_SHORT;
+        return result;
+    }
 
-      remaining_bytes = (size_t)(dst_buf_end_ptr - dst_write_ptr);
-      if (len_code > remaining_bytes) {
-        result.status |= DECODE_OUT_BUFFER_OVERFLOW;
-        len_code = (uint8_t)remaining_bytes;
-      }
+    size_t read_index = 0u;
+    size_t write_index = 0u;
 
-      for (i = len_code; i != 0u; i--) {
-        src_byte = *src_read_ptr++;
-        if (src_byte == 0u) {
-          result.status |= DECODE_ZERO_BYTE_IN_INPUT;
+    while (read_index < src_len) {
+
+        uint8_t code = src[read_index];
+
+        /* Zero is not allowed in a COBS encoded frame */
+        if (code == 0u) {
+            result.status = DECODE_ZERO_BYTE_IN_INPUT;
+            return result;
         }
 
-      }
+        /*
+         * The code byte must point to bytes that actually
+         * exist in the input.
+         */
+        if ((size_t)code > (src_len - read_index)) {
+            result.status = DECODE_INPUT_TOO_SHORT;
+            return result;
+        }
 
-      if (src_read_ptr >= src_end_ptr) {
-        break;
-      }
+        /*
+         * Copy the bytes belonging to this block.
+         */
+        for (size_t i = 1u; i < (size_t)code; i++) {
 
+            if (write_index >= dst_buf_len) {
+                result.status = DECODE_OUT_BUFFER_OVERFLOW;
+                return result;
+            }
 
+            dst[write_index] = src[read_index + i];
+            write_index++;
+        }
+
+        read_index += (size_t)code;
+
+        /*
+         * If another block follows, the original data
+         * contained a zero byte between the blocks.
+         */
+        if (read_index < src_len) {
+
+            if (write_index >= dst_buf_len) {
+                result.status = DECODE_OUT_BUFFER_OVERFLOW;
+                return result;
+            }
+
+            dst[write_index] = 0u;
+            write_index++;
+        }
     }
-  }
 
-  result.out_len = (size_t)(dst_write_ptr - dst_buf_start_ptr);
+    result.out_len = write_index;
+    result.status = DECODE_OK;
 
-  return result;
+    return result;
 }
