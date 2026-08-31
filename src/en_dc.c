@@ -1,139 +1,40 @@
-#include "en_dc.h"
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdio.h>
 #include <stdlib.h>
 
-/*****************************************************************************
- * Defines
- ****************************************************************************/
+static int shared_counter = 0;
+static pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
+static sem_t sync_semaphore;
 
-#ifndef FALSE
-#define FALSE (0)
-#endif
-
-#ifndef TRUE
-#define TRUE (!FALSE)
-#endif
-
-/*****************************************************************************
- * Functions
- ****************************************************************************/
-
-/* Encode 
- * TODO : 
- * - Check the encoding loop and the buffer sizes make sure matches the required ones to the algorithm used 
- * - Check the condition based on which the whole encoding process takes place 
- * */
-encode_result frame_encode(void *dst_buf_ptr, size_t dst_buf_len,
-                               const void *src_ptr, size_t src_len) {
-  encode_result result = {0u, ENCODE_OK};
-  const uint8_t *src_read_ptr = src_ptr;
-  const uint8_t *src_end_ptr = src_read_ptr + src_len;
-  uint8_t *dst_buf_start_ptr = dst_buf_ptr;
-  uint8_t *dst_buf_end_ptr = dst_buf_start_ptr; 
-  uint8_t *dst_write_ptr = dst_code_write_ptr + 3u;
-  uint8_t src_byte = 0u;
-  uint8_t search_len = 1u;
-
-  if ((dst_buf_ptr == NULL) || (src_ptr == NULL)) {
-    result.status = ENCODE_NULL_POINTER;
-    return result;
-  }
-
-  if (src_len != 0u) {
-    for (int i=0;i<search_len;i++) {
-
-
-      src_byte = *src_read_ptr++;
-      if (src_byte == 0xFFu) {
-
-      } else {
-        *dst_write_ptr++ = src_byte;
-        search_len++;
-        if (src_read_ptr >= src_end_ptr) {
-          break;
-        }
-        if (search_len == 0u) {
-          *dst_code_write_ptr = search_len;
-          dst_code_write_ptr = dst_write_ptr++;
-          search_len = 1u;
-        }
-      }
-    }
-  }
-
-  if (dst_code_write_ptr >= dst_buf_end_ptr) {
-    result.status |= ENCODE_OUT_BUFFER_OVERFLOW;
-    dst_write_ptr = dst_buf_end_ptr;
-  } else {
-    *dst_code_write_ptr = search_len;
-  }
-
-  result.out_len = (size_t)(dst_write_ptr - dst_buf_start_ptr);
-
-  return result;
+void init_synchronization(void) {
+    pthread_mutex_init(&counter_mutex, NULL);
+    sem_init(&sync_semaphore, 0, 0);
 }
 
-/* Decode 
- * TODO:
- * - Verify that the decoding loop processes the complete input stream.
- * - Add appropriate termination logic for the decoding process.
- * - Ensure the decoder does not read beyond the input buffer.
- * */
-decode_result frame_decode(void *dst_buf_ptr, size_t dst_buf_len,
-                               const void *src_ptr, size_t src_len) {
-  decode_result result = {0u, DECODE_OK};
-  const uint8_t *src_read_ptr = src_ptr;
-  const uint8_t *src_end_ptr = src_read_ptr + src_len;
-  uint8_t *dst_buf_start_ptr = dst_buf_ptr;
-  uint8_t *dst_buf_end_ptr = dst_buf_start_ptr + dst_buf_len;
-  uint8_t *dst_write_ptr = dst_buf_ptr;
-  size_t remaining_bytes;
-  uint8_t src_byte;
-  uint8_t i;
-  uint8_t len_code;
+void increment_counter(void) {
+    pthread_mutex_lock(&counter_mutex);
+    shared_counter++;
+    pthread_mutex_unlock(&counter_mutex);
+}
 
-  if ((dst_buf_ptr == NULL) || (src_ptr == NULL)) {
-    result.status = DECODE_NULL_POINTER;
-    return result;
-  }
+int get_counter(void) {
+    int val;
+    pthread_mutex_lock(&counter_mutex);
+    val = shared_counter;
+    pthread_mutex_unlock(&counter_mutex);
+    return val;
+}
 
-  if (src_len != 0u) {
-    for (int i=0;i<len_code;i++) {
-      len_code = *src_read_ptr++;
-      if (len_code == 0u) {
-        result.status |= DECODE_ZERO_BYTE_IN_INPUT;
-        break;
-      }
-      len_code--;
+void signal_worker(void) {
+    sem_post(&sync_semaphore);
+}
 
-      remaining_bytes = (size_t)(src_end_ptr - src_read_ptr);
-      if (len_code > remaining_bytes) {
-        result.status |= DECODE_INPUT_TOO_SHORT;
-        len_code = (uint8_t)remaining_bytes;
-      }
+void wait_for_signal(void) {
+    sem_wait(&sync_semaphore);
+}
 
-      remaining_bytes = (size_t)(dst_buf_end_ptr - dst_write_ptr);
-      if (len_code > remaining_bytes) {
-        result.status |= DECODE_OUT_BUFFER_OVERFLOW;
-        len_code = (uint8_t)remaining_bytes;
-      }
-
-      for (i = len_code; i != 0u; i--) {
-        src_byte = *src_read_ptr++;
-        if (src_byte == 0u) {
-          result.status |= DECODE_ZERO_BYTE_IN_INPUT;
-        }
-
-      }
-
-      if (src_read_ptr >= src_end_ptr) {
-        break;
-      }
-
-
-    }
-  }
-
-  result.out_len = (size_t)(dst_write_ptr - dst_buf_start_ptr);
-
-  return result;
+void cleanup_synchronization(void) {
+    pthread_mutex_destroy(&counter_mutex);
+    sem_destroy(&sync_semaphore);
 }
